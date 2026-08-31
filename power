@@ -1,0 +1,321 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  StyleSheet, 
+  Text, 
+  View, 
+  TouchableOpacity, 
+  ImageBackground, 
+  SafeAreaView, 
+  TextInput, 
+  ScrollView,
+  Alert,
+  Modal 
+} from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Ionicons } from '@expo/vector-icons'; 
+import { createClient } from '@supabase/supabase-js';
+
+// FIX: Use require() for local image assets in React Native to prevent bundling errors
+const gokuWallpaper = require('./IMG-20260827-WA0004.jpg'); 
+
+// --- SUPABASE SETUP ---
+const supabaseUrl = 'https://crmgbvpcelabsjgylgky.supabase.co';
+const supabaseKey = 'sb_publishable_ORXjvgFVU3aKgDAs7Vl-Bg_mQi-Bf3P';
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+export default function App() {
+  const [habits, setHabits] = useState([]);
+  const [userXp, setUserXp] = useState(0);
+  const [newHabitText, setNewHabitText] = useState('');
+  const [selectedStat, setSelectedStat] = useState('focus');
+  const [isLoaded, setIsLoaded] = useState(false);
+  
+  const [showLevelUp, setShowLevelUp] = useState(false);
+  const [achievedLevel, setAchievedLevel] = useState(1);
+
+  const [stats, setStats] = useState({
+    wisdom: 10,
+    confidence: 10,
+    strength: 10,
+    discipline: 10,
+    focus: 10
+  });
+
+  // 1. INITIAL LOAD
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const savedXp = await AsyncStorage.getItem('rpgXp');
+        const savedStats = await AsyncStorage.getItem('rpgStats');
+
+        if (savedXp) setUserXp(JSON.parse(savedXp));
+        if (savedStats) setStats(JSON.parse(savedStats));
+
+        await fetchHabits();
+
+      } catch (error) {
+        console.log('Error loading data:', error);
+      } finally {
+        setIsLoaded(true); 
+      }
+    };
+    loadData();
+  }, []);
+
+  // 2. SAVE LOCAL DATA
+  useEffect(() => {
+    if (!isLoaded) return; 
+    const saveData = async () => {
+      try {
+        await AsyncStorage.setItem('rpgXp', JSON.stringify(userXp));
+        await AsyncStorage.setItem('rpgStats', JSON.stringify(stats));
+      } catch (error) {
+        console.log('Error saving stats:', error);
+      }
+    };
+    saveData();
+  }, [userXp, stats, isLoaded]);
+
+  // 3. FETCH HABITS FROM SUPABASE
+  async function fetchHabits() {
+    const { data, error } = await supabase
+      .from('habits')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching habits:', error.message);
+    } else {
+      setHabits(data || []);
+    }
+  }
+
+  const getImageUrl = (text) => {
+    const lowerText = text.toLowerCase();
+    if (lowerText.includes('study')) {
+      return 'https://images.unsplash.com/photo-1532012197267-da84d127e765?q=80&w=1000'; 
+    } else if (lowerText.includes('run')) {
+      return 'https://images.unsplash.com/photo-1571008882533-31b392a7cc38?q=80&w=1000'; 
+    } else if (lowerText.includes('pushup')) {
+      return 'https://images.unsplash.com/photo-1598971639058-fab3c3109a00?q=80&w=1000'; 
+    } else if (lowerText.includes('wake up')) {
+      return 'https://images.unsplash.com/photo-1533090161767-e6ffed986c88?q=80&w=1000'; 
+    } else {
+      return 'https://images.unsplash.com/photo-1517960413843-0aee8e2b3285?q=80&w=1000'; 
+    }
+  };
+
+  // 4. ADD HABIT TO SUPABASE
+  const addHabit = async () => {
+    if (newHabitText.trim() === '') return;
+    
+    const newHabit = {
+      title: newHabitText,
+      xp: 50,
+      streak: 0,
+      stat: selectedStat,
+      image_url: getImageUrl(newHabitText) // FIX: Matched exactly to database column
+    };
+
+    const { error } = await supabase
+      .from('habits')
+      .insert([newHabit]);
+
+    if (error) {
+      Alert.alert('Error adding quest', error.message);
+      console.error(error);
+    } else {
+      setNewHabitText('');
+      fetchHabits(); 
+    }
+  };
+
+  // 5. UPDATE STREAK IN SUPABASE & XP LOCALLY
+  const completeHabit = async (id, xpAmount, statType, currentStreak) => {
+    const currentLevel = Math.floor(userXp / 100) + 1;
+    const newXp = userXp + xpAmount;
+    const newLevel = Math.floor(newXp / 100) + 1;
+
+    if (newLevel > currentLevel) {
+      setAchievedLevel(newLevel);
+      setShowLevelUp(true);
+    }
+
+    setUserXp(newXp);
+    
+    if (statType) {
+      setStats((prevStats) => ({
+        ...prevStats,
+        [statType]: prevStats[statType] + 1
+      }));
+    }
+
+    const updatedStreak = (currentStreak || 0) + 1;
+    setHabits(habits.map((habit) => habit.id === id ? { ...habit, streak: updatedStreak } : habit));
+
+    const { error } = await supabase
+      .from('habits')
+      .update({ streak: updatedStreak })
+      .eq('id', id);
+      
+    if (error) console.error("Error updating streak:", error.message);
+  };
+
+  // 6. DELETE FROM SUPABASE
+  const deleteHabit = (id) => {
+    Alert.alert(
+      "Abandon Quest?",
+      "Are you sure you want to delete this daily quest?",
+      [
+        { text: "Cancel", style: "cancel" },
+        { 
+          text: "Delete", 
+          style: "destructive", 
+          onPress: async () => {
+            setHabits(habits.filter(habit => habit.id !== id));
+            await supabase.from('habits').delete().eq('id', id);
+          } 
+        }
+      ]
+    );
+  };
+
+  if (!isLoaded) {
+    return (
+      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center', backgroundColor: '#000' }]}>
+        <Text style={{ color: 'white', fontSize: 18 }}>Loading Game Data...</Text>
+      </View>
+    );
+  }
+
+  return (
+    <ImageBackground source={gokuWallpaper} style={styles.backgroundImage}>
+      <View style={styles.appDarkOverlay}>
+        <SafeAreaView style={styles.container}>
+          
+          <Modal animationType="fade" transparent={true} visible={showLevelUp} onRequestClose={() => setShowLevelUp(false)}>
+            <View style={styles.modalOverlay}>
+              <View style={styles.modalContent}>
+                <Text style={styles.levelUpTitle}>LEVEL UP!</Text>
+                <Text style={styles.levelUpSubtitle}>You reached Level {achievedLevel}!</Text>
+                <TouchableOpacity style={styles.modalButton} onPress={() => setShowLevelUp(false)}>
+                  <Text style={styles.modalButtonText}>CONTINUE</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </Modal>
+
+          <ScrollView showsVerticalScrollIndicator={false}>
+            
+            <View style={styles.profileCard}>
+              <Text style={styles.playerLabel}>PLAYER STATS</Text>
+              <Text style={styles.levelText}>Level {Math.floor(userXp / 100) + 1}</Text>
+              <Text style={styles.xpText}>{userXp} XP</Text>
+              
+              <View style={styles.progressBarBg}>
+                <View style={[styles.progressBarFill, { width: `${userXp % 100}%` }]} />
+              </View>
+            </View>
+
+            <View style={styles.statsContainer}>
+              {Object.keys(stats).map((statKey) => (
+                <TouchableOpacity 
+                  key={statKey}
+                  style={[styles.statBox, selectedStat === statKey && styles.statBoxActive]}
+                  onPress={() => setSelectedStat(statKey)}
+                >
+                  <Text style={styles.statLabel}>{statKey.toUpperCase()}</Text>
+                  <Text style={styles.statIcon}>{stats[statKey]}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <View style={styles.addQuestRow}>
+              <TextInput
+                style={styles.input}
+                placeholder="Enter a new habit..."
+                placeholderTextColor="#888"
+                value={newHabitText}
+                onChangeText={setNewHabitText}
+              />
+              <TouchableOpacity style={styles.addButton} onPress={addHabit}>
+                <Ionicons name="add" size={24} color="#FFF" />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.sectionTitle}>Daily Quests</Text>
+
+            {habits.map((item) => (
+              <View key={item.id} style={styles.card}>
+                <ImageBackground 
+                  // FIX: Changed item.imageUrl to item.image_url to pull correctly from database
+                  source={{ uri: item.image_url || 'https://images.unsplash.com/photo-1517960413843-0aee8e2b3285?q=80&w=1000' }} 
+                  style={styles.habitCard}
+                  imageStyle={{ borderRadius: 15 }} 
+                >
+                  <View style={styles.cardOverlay}>
+                    <View style={styles.cardHeader}>
+                      <Text style={styles.habitTitle}>{item.title}</Text>
+                      <TouchableOpacity style={styles.deleteButton} onPress={() => deleteHabit(item.id)}>
+                        <Ionicons name="trash-outline" size={18} color="#ff453a" />
+                      </TouchableOpacity>
+                    </View>
+                    
+                    <View style={styles.streakRow}>
+                      <Ionicons name="flame" size={16} color="#FF8C00" />
+                      <Text style={styles.streakText}>
+                        {item.streak || 0} day streak • {item.stat ? item.stat.toUpperCase() : 'NONE'}
+                      </Text>
+                    </View>
+
+                    <TouchableOpacity style={styles.button} onPress={() => completeHabit(item.id, item.xp, item.stat, item.streak)}>
+                      <Text style={styles.buttonText}>+ {item.xp} XP</Text>
+                    </TouchableOpacity>
+                  </View>
+                </ImageBackground>
+              </View>
+            ))}
+
+          </ScrollView>
+        </SafeAreaView>
+      </View>
+    </ImageBackground>
+  );
+}
+
+const styles = StyleSheet.create({
+  backgroundImage: { flex: 1, width: '100%', height: '100%' },
+  appDarkOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.75)' },
+  container: { flex: 1, padding: 20, paddingTop: 10 },
+  profileCard: { backgroundColor: 'rgba(30, 30, 30, 0.85)', padding: 20, borderRadius: 12, marginBottom: 20, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.1)' },
+  playerLabel: { color: '#888', fontSize: 12, fontWeight: 'bold', letterSpacing: 1.5, marginBottom: 5 },
+  levelText: { color: '#FF8C00', fontSize: 36, fontWeight: 'bold', marginBottom: 5 },
+  xpText: { color: '#03DAC6', fontSize: 14, marginBottom: 15 },
+  progressBarBg: { width: '100%', height: 10, backgroundColor: '#333', borderRadius: 5, overflow: 'hidden' },
+  progressBarFill: { height: '100%', backgroundColor: '#03DAC6' },
+  statsContainer: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', marginBottom: 20 },
+  statBox: { width: '31%', backgroundColor: 'rgba(30, 30, 30, 0.85)', padding: 12, borderRadius: 12, alignItems: 'center', marginBottom: 10, borderWidth: 1, borderColor: '#333' },
+  statBoxActive: { borderColor: '#03DAC6', backgroundColor: 'rgba(42, 42, 42, 0.9)' },
+  statLabel: { color: '#888', fontSize: 10, fontWeight: 'bold', marginBottom: 5 },
+  statIcon: { color: '#FFF', fontSize: 16, fontWeight: 'bold' },
+  addQuestRow: { flexDirection: 'row', marginBottom: 30 },
+  input: { flex: 1, backgroundColor: 'rgba(30, 30, 30, 0.9)', color: '#FFF', padding: 15, borderRadius: 12, marginRight: 10, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.1)' },
+  addButton: { backgroundColor: '#FF8C00', justifyContent: 'center', paddingHorizontal: 15, borderRadius: 12 },
+  sectionTitle: { color: '#FFF', fontSize: 20, fontWeight: 'bold', marginBottom: 15 },
+  card: { marginBottom: 15, borderRadius: 15, overflow: 'hidden' },
+  habitCard: { width: '100%', minHeight: 120, justifyContent: 'center' },
+  cardOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.6)', padding: 20, borderRadius: 15, justifyContent: 'space-between' },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 },
+  deleteButton: { backgroundColor: 'rgba(255, 69, 58, 0.2)', padding: 6, borderRadius: 20 },
+  habitTitle: { color: '#FFF', fontSize: 18, fontWeight: 'bold', flex: 1 },
+  streakRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 15 },
+  streakText: { color: '#AAA', fontSize: 14, marginLeft: 5 },
+  button: { backgroundColor: '#03DAC6', paddingVertical: 8, paddingHorizontal: 15, borderRadius: 8, alignSelf: 'flex-start' },
+  buttonText: { color: '#000', fontWeight: 'bold' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.85)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  modalContent: { width: '100%', maxWidth: 340, backgroundColor: '#1E1E1E', borderRadius: 20, padding: 30, alignItems: 'center', borderWidth: 2, borderColor: '#FF8C00' },
+  levelUpTitle: { fontSize: 32, fontWeight: 'bold', color: '#FF8C00', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 2, textAlign: 'center' },
+  levelUpSubtitle: { fontSize: 18, color: '#FFF', marginBottom: 25, textAlign: 'center' },
+  modalButton: { backgroundColor: '#03DAC6', paddingVertical: 12, paddingHorizontal: 40, borderRadius: 12, width: '100%', alignItems: 'center' },
+  modalButtonText: { color: '#000', fontWeight: 'bold', fontSize: 16 }
+});
